@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 require("dotenv").config();
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const port = process.env.port || 3000;
 
@@ -41,6 +41,17 @@ async function run() {
       const email = req.params.email;
       const query = { email: email };
       const result = await usersCollection.findOne(query);
+      res.send(result);
+    });
+
+    // update a user by id
+    app.patch("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const {role} = req.body;
+
+      const filter = {_id : new ObjectId(id) };
+      const updateDoc = { $set: { role } };
+      const result = await usersCollection.updateOne(filter, updateDoc);
       res.send(result);
     });
 
