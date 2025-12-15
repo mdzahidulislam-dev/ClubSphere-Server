@@ -28,6 +28,7 @@ async function run() {
 
     const db = client.db("clubsphere");
     const usersCollection = db.collection("users");
+    const clubsCollection = db.collection("clubs");
 
     // get all users
     app.get("/users", async (req, res) => {
@@ -47,9 +48,9 @@ async function run() {
     // update a user by id
     app.patch("/users/:id", async (req, res) => {
       const id = req.params.id;
-      const {role} = req.body;
+      const { role } = req.body;
 
-      const filter = {_id : new ObjectId(id) };
+      const filter = { _id: new ObjectId(id) };
       const updateDoc = { $set: { role } };
       const result = await usersCollection.updateOne(filter, updateDoc);
       res.send(result);
@@ -77,6 +78,48 @@ async function run() {
         $set: updateFields,
       };
       const result = await usersCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
+
+    // get clubs by gmail
+    app.get("/clubs/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { managerEmail: email };
+      const result = await clubsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // get clubs 
+    app.get("/clubs", async (req, res) => {
+      const result = await clubsCollection.find().toArray();
+      res.send(result);
+    });
+
+    // post a club
+    app.post("/clubs", async (req, res) => {
+      const club = req.body;
+      const result = await clubsCollection.insertOne(club);
+      res.send(result);
+    });
+
+    // Update a club
+    app.patch("/clubs/:id", async (req, res) => {
+      const id = req.params.id;
+      const updateFields = req.body;
+
+      const filter = { _id: new ObjectId(id) };
+      const updateClub = {
+        $set: updateFields,
+      };
+      const result = await clubsCollection.updateOne(filter, updateClub);
+      res.send(result);
+    });
+
+    // Delete a Club
+    app.delete("/clubs/:id", async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const result = await clubsCollection.deleteOne(filter);
       res.send(result);
     });
 
