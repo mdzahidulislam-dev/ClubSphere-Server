@@ -89,7 +89,18 @@ async function run() {
       res.send(result);
     });
 
-    // get clubs 
+    // get clubs by id
+    app.get("/club/:id", async (req, res) => {
+      const id = req.params.id;
+      console.log(id);
+
+      const query = { _id: new ObjectId(id) };
+      const result = await clubsCollection.findOne(query);
+      console.log("DB result:", result);
+      res.send(result);
+    });
+
+    // get clubs
     app.get("/clubs", async (req, res) => {
       const result = await clubsCollection.find().toArray();
       res.send(result);
