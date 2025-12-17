@@ -89,6 +89,19 @@ async function run() {
       res.send(result);
     });
 
+    //Approve/Reject a clubs by id
+    app.patch("/clubs/:id", async (req, res) => {
+      const id = req.params.id;
+      const updateFields = req.body;
+
+      const filter = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: updateFields,
+      };
+      const result = await clubsCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
+
     // get clubs by id
     app.get("/club/:id", async (req, res) => {
       const id = req.params.id;
