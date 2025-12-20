@@ -4,6 +4,8 @@ const app = express();
 require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
+
 const port = process.env.port || 3000;
 
 //middleware
@@ -29,6 +31,8 @@ async function run() {
     const db = client.db("clubsphere");
     const usersCollection = db.collection("users");
     const clubsCollection = db.collection("clubs");
+    const membershipCollection = db.collection("membership");
+    const paymentsCollection = db.collection("payments");
 
     // get all users
     app.get("/users", async (req, res) => {
@@ -105,17 +109,22 @@ async function run() {
     // get clubs by id
     app.get("/club/:id", async (req, res) => {
       const id = req.params.id;
-      console.log(id);
-
       const query = { _id: new ObjectId(id) };
       const result = await clubsCollection.findOne(query);
-      console.log("DB result:", result);
       res.send(result);
     });
 
     // get clubs
     app.get("/clubs", async (req, res) => {
       const result = await clubsCollection.find().toArray();
+      res.send(result);
+    });
+
+    // get clubs with status
+    app.get("/all-clubs/status", async (req, res) => {
+      const { status } = req.query;
+      const query = status ? { status } : {};
+      const result = await clubsCollection.find(query).toArray();
       res.send(result);
     });
 
@@ -144,6 +153,239 @@ async function run() {
       const id = req.params.id;
       const filter = { _id: new ObjectId(id) };
       const result = await clubsCollection.deleteOne(filter);
+      res.send(result);
+    });
+
+    app.post("/addMembership", async (req, res) => {
+      try {
+        const membershipInfo = req.body;
+
+        const query = {
+          clubId: membershipInfo.clubId,
+          memberEmail: membershipInfo.memberEmail,
+        };
+
+        const existingMember = await membershipCollection.findOne(query);
+
+        if (existingMember) {
+          return res.status(409).send({
+            message: "Member already exists in this club",
+            membershipId: existingMember._id,
+          });
+        }
+
+        membershipInfo.joinAt = new Date();
+
+        const result = await membershipCollection.insertOne(membershipInfo);
+
+        // Update club member count AFTER successful insert
+        await clubsCollection.updateOne(
+          { _id: new ObjectId(membershipInfo.clubId) },
+          { $inc: { membersCount: 1 } }
+        );
+
+        return res.send({
+          message: "Membership added successfully",
+          membershipId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Add Membership Error:", error);
+        return res.status(500).send({ message: "Failed to add membership" });
+      }
+    });
+
+    // get membership id by email
+    app.get("/membership/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        const clubId = req.query.clubId;
+
+        if (!email || !clubId) {
+          return res.status(400).send({ message: "Email and clubId required" });
+        }
+
+        const query = {
+          memberEmail: email,
+          clubId: clubId,
+        };
+
+        const result = await membershipCollection.findOne(query);
+        res.send(result);
+      } catch (error) {
+        console.error("Get Membership Error:", error);
+        res.status(500).send({ message: "Failed to get membership" });
+      }
+    });
+
+    app.get("/my-memberships/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await membershipCollection
+        .find({ memberEmail: email })
+        .toArray();
+      res.send(result);
+    });
+
+    app.patch("/updateMembershipStatus/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const status = req.body.status;
+      const updateStatus = {
+        $set: {
+          status: status,
+        },
+      };
+      const result = await membershipCollection.updateOne(query, updateStatus);
+      res.send(result);
+    });
+
+    // payment related apis
+    app.post("/create-checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      const amount = parseInt(paymentInfo.clubFee) * 100;
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              unit_amount: amount,
+              product_data: {
+                name: `Please pay to join: ${paymentInfo.clubName}`,
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        mode: "payment",
+        metadata: {
+          clubId: paymentInfo.clubId,
+          clubName: paymentInfo.clubName,
+          customer_name: paymentInfo.memberName,
+          customer_photo: paymentInfo.memberPhoto,
+          type: "membership",
+        },
+        customer_email: paymentInfo.memberEmail,
+        success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.SITE_DOMAIN}/payment-canceled`,
+      });
+
+      res.send({ url: session.url });
+    });
+
+    // payment success and add to membership db or payments db
+    app.patch("/payment-success", async (req, res) => {
+      try {
+        const sessionId = req.query.session_id;
+        if (!sessionId)
+          return res.status(400).send({ message: "No session ID" });
+
+        // Stripe session retrieve
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+        if (session.payment_status !== "paid") {
+          return res.status(400).send({ message: "Payment not completed" });
+        }
+
+        // Check if payment already exists
+        const existingPayment = await paymentsCollection.findOne({
+          transactionId: session.payment_intent,
+        });
+
+        if (existingPayment) {
+          return res.status(409).send({
+            message: "Payment already processed",
+            transactionId: session.payment_intent,
+          });
+        }
+
+        // Save payment db
+        const payment = {
+          amount: session.amount_total / 100,
+          currency: session.currency,
+          memberEmail: session.customer_email,
+          memberName: session.metadata.customer_name,
+          memberPhoto: session.metadata.customer_photo,
+          type: session.metadata.type,
+          clubId: session.metadata.clubId,
+          clubName: session.metadata.clubName,
+          transactionId: session.payment_intent,
+          paymentStatus: session.payment_status,
+          paidAt: new Date(),
+        };
+
+        await paymentsCollection.insertOne(payment);
+
+        // Add member to membership collection
+        const membershipQuery = {
+          amount: session.amount_total / 100,
+          clubId: session.metadata.clubId,
+
+          transactionId: session.payment_intent,
+          paymentStatus: session.payment_status,
+        };
+        console.log(session);
+
+        const existingMember = await membershipCollection.findOne(
+          membershipQuery
+        );
+
+        if (!existingMember) {
+          await membershipCollection.insertOne({
+            clubId: session.metadata.clubId,
+            clubName: session.metadata.clubName,
+            amount: session.amount_total / 100,
+            memberEmail: session.customer_email,
+            memberName: session.metadata.customer_name,
+            memberPhoto: session.metadata.customer_photo,
+            status: "paid",
+            joinAt: new Date(),
+          });
+        } else {
+          // Update status if already exists
+          await membershipCollection.updateOne(membershipQuery, {
+            $set: { status: "paid" },
+          });
+        }
+
+        // Update club member count
+        await clubsCollection.updateOne(
+          { _id: new ObjectId(session.metadata.clubId) },
+          { $inc: { membersCount: 1 } }
+        );
+
+        return res.send({
+          success: true,
+          clubId: session.metadata.clubId,
+          clubName: session.metadata.clubName,
+          transactionId: session.payment_intent,
+          amount: session.amount_total / 100,
+        });
+      } catch (error) {
+        console.error("Payment Success Error:", error);
+        return res.status(500).send({ message: "Payment processing failed" });
+      }
+    });
+
+    // get all payments
+    app.get("/payments", async (req, res) => {
+      const role = req.query.role;
+      const query = {};
+      if (role) {
+        query.role = role;
+      }
+
+      const result = await paymentsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // get all payments
+    app.get("/payments/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = {};
+      if (email) {
+        query.memberEmail = email;
+      }
+
+      const result = await paymentsCollection.find(query).toArray();
       res.send(result);
     });
 
