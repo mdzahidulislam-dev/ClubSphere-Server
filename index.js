@@ -31,8 +31,10 @@ async function run() {
     const db = client.db("clubsphere");
     const usersCollection = db.collection("users");
     const clubsCollection = db.collection("clubs");
+    const eventsCollection = db.collection("events");
     const membershipCollection = db.collection("membership");
     const paymentsCollection = db.collection("payments");
+    const eventRegistrationCollection = db.collection("eventRegistration");
 
     // get all users
     app.get("/users", async (req, res) => {
@@ -156,6 +158,198 @@ async function run() {
       res.send(result);
     });
 
+    // events releted apis -------------------------------
+
+    // POST - Create a new event
+    app.post("/events", async (req, res) => {
+      try {
+        const event = req.body;
+        if (event.eventDate && event.eventTime) {
+          event.eventDateTime = `${event.eventDate}T${event.eventTime}`;
+        }
+
+        const result = await eventsCollection.insertOne(event);
+        res.send(result);
+      } catch (error) {
+        console.error("Create Event Error:", error);
+        res.status(500).send({ message: "Failed to create event" });
+      }
+    });
+
+    // Function to determine event status based on date and time
+    function getEventStatus(eventDateTime) {
+      const now = new Date();
+      const eventDate = new Date(eventDateTime);
+
+      if (eventDate < now) return "past";
+      const diffDays = (eventDate - now) / (1000 * 60 * 60 * 24);
+      if (diffDays <= 5) return "ongoing";
+      return "upcoming";
+    }
+
+    // GET - Get events by email with status
+    app.get("/events/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+
+        const events = await eventsCollection
+          .find({ managerEmail: email })
+          .toArray();
+
+        const updatedEvents = events.map((event) => ({
+          ...event,
+          status: getEventStatus(event.eventDateTime),
+        }));
+
+        res.send(updatedEvents);
+      } catch (error) {
+        console.error("Get Events Error:", error);
+        res.status(500).send({ message: "Failed to get events" });
+      }
+    });
+
+    // GET - Get all events with status "ongoing" or "upcoming"
+    app.get("/all-events", async (req, res) => {
+      try {
+        // Fetch all events from database
+        const events = await eventsCollection.find({}).toArray();
+
+        // Add status to each event and filter for ongoing/upcoming only
+        const filteredEvents = events
+          .map((event) => ({
+            ...event,
+            status: getEventStatus(event.eventDateTime),
+          }))
+          .filter(
+            (event) => event.status === "ongoing" || event.status === "upcoming"
+          );
+
+        res.send(filteredEvents);
+      } catch (error) {
+        console.error("Get All Events Error:", error);
+        res.status(500).send({ message: "Failed to get events" });
+      }
+    });
+
+    // get events-details by id
+    app.get("/event-details/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await eventsCollection.findOne(query);
+      res.send(result);
+    });
+
+    // PATCH - Update an event
+    app.patch("/events/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        const {
+          eventName,
+          description,
+          location,
+          eventDate,
+          eventTime,
+          eventFee,
+          bannerImage,
+          clubId,
+        } = req.body;
+
+        const eventDateTime = `${eventDate}T${eventTime}`;
+
+        const updateEvent = {
+          $set: {
+            eventName,
+            description,
+            location,
+            eventDate,
+            eventTime,
+            eventDateTime,
+            eventFee,
+            bannerImage,
+            clubId,
+          },
+        };
+
+        const result = await eventsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          updateEvent
+        );
+
+        res.send(result);
+      } catch (error) {
+        console.error("Update Event Error:", error);
+        res.status(500).send({ message: "Failed to update event" });
+      }
+    });
+
+    // Delete a events
+    app.delete("/events/:id", async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const result = await eventsCollection.deleteOne(filter);
+      res.send(result);
+    });
+
+    // POST - Register for an event
+    app.post("/event-registrations", async (req, res) => {
+      try {
+        const registration = req.body;
+
+        const existingRegistration = await eventRegistrationCollection.findOne({
+          eventId: registration.eventId,
+          userEmail: registration.userEmail,
+          status: "registered",
+        });
+
+        if (existingRegistration) {
+          return res.status(400).send({
+            message: "You are already registered for this event",
+            alreadyRegistered: true,
+          });
+        }
+
+        // Insert the registration
+        const result = await eventRegistrationCollection.insertOne(
+          registration
+        );
+
+        res.send({
+          success: true,
+          message: "Registration successful",
+          result,
+        });
+      } catch (error) {
+        console.error("Event Registration Error:", error);
+        res.status(500).send({ message: "Failed to register for event" });
+      }
+    });
+
+
+    //get register user by id for events details
+    app.get("/event-registration/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        const eventId = req.query.eventId;
+
+        if (!email || !eventId) {
+          return res.status(400).send({ message: "Email and eventId required" });
+        }
+
+        const query = {
+           userEmail: email,
+           eventId: eventId,
+        };
+
+        const result = await eventRegistrationCollection.findOne(query);
+        res.send(result);
+      } catch (error) {
+        console.error("Get Membership Error:", error);
+        res.status(500).send({ message: "Failed to get membership" });
+      }
+    });
+
+    //add new member
     app.post("/addMembership", async (req, res) => {
       try {
         const membershipInfo = req.body;
@@ -259,6 +453,7 @@ async function run() {
         metadata: {
           clubId: paymentInfo.clubId,
           clubName: paymentInfo.clubName,
+          clubManagerEmail: paymentInfo.clubManagerEmail,
           customer_name: paymentInfo.memberName,
           customer_photo: paymentInfo.memberPhoto,
           type: "membership",
@@ -307,6 +502,7 @@ async function run() {
           type: session.metadata.type,
           clubId: session.metadata.clubId,
           clubName: session.metadata.clubName,
+          clubManagerEmail: session.metadata.clubManagerEmail,
           transactionId: session.payment_intent,
           paymentStatus: session.payment_status,
           paidAt: new Date(),
@@ -332,6 +528,7 @@ async function run() {
           await membershipCollection.insertOne({
             clubId: session.metadata.clubId,
             clubName: session.metadata.clubName,
+            clubManagerEmail: session.metadata.clubManagerEmail,
             amount: session.amount_total / 100,
             memberEmail: session.customer_email,
             memberName: session.metadata.customer_name,
