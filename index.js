@@ -87,6 +87,119 @@ async function run() {
       res.send(result);
     });
 
+    //Admin Api--------------
+
+    // get admin stats summary
+    app.get("/admin/stats", async (req, res) => {
+      try {
+        // Total Users
+        const totalUsers = await usersCollection.countDocuments();
+
+        // Total Clubs
+        const totalClubs = await clubsCollection.countDocuments();
+
+        // Active Memberships
+        const activeMemberships = await membershipCollection.countDocuments({
+          status: { $in: ["active", "paid"] },
+        });
+
+        // Total Revenue from payments
+        const payments = await paymentsCollection.find({}).toArray();
+        const totalRevenue = payments.reduce(
+          (sum, payment) => sum + payment.amount,
+          0
+        );
+
+        // Calculate growth (mock data - you can implement real calculation)
+        const stats = {
+          totalUsers,
+          totalClubs,
+          activeMemberships,
+          totalRevenue,
+          userGrowth: 5.2,
+          clubGrowth: 2.1,
+          membershipGrowth: 10.5,
+          revenueGrowth: 15.0,
+        };
+
+        res.send(stats);
+      } catch (error) {
+        console.error("Get Admin Stats Error:", error);
+        res.status(500).send({ message: "Failed to get admin stats" });
+      }
+    });
+
+    //get payment data for chart
+    app.get("/admin/payments-chart", async (req, res) => {
+      try {
+        const payments = await paymentsCollection.find({}).toArray();
+
+        // Group payments by month
+        const monthlyData = {};
+        const monthNames = [
+          "Jan",
+          "Feb",
+          "Mar",
+          "Apr",
+          "May",
+          "Jun",
+          "Jul",
+          "Aug",
+          "Sep",
+          "Oct",
+          "Nov",
+          "Dec",
+        ];
+
+        payments.forEach((payment) => {
+          const date = new Date(payment.paidAt);
+          const monthIndex = date.getMonth();
+          const monthName = monthNames[monthIndex];
+
+          if (!monthlyData[monthName]) {
+            monthlyData[monthName] = 0;
+          }
+          monthlyData[monthName] += payment.amount;
+        });
+
+        // Convert to array format for chart
+        const chartData = monthNames.map((month) => ({
+          month,
+          amount: monthlyData[month] || 0,
+        }));
+
+        res.send(chartData);
+      } catch (error) {
+        console.error("Get Payments Chart Error:", error);
+        res.status(500).send({ message: "Failed to get chart data" });
+      }
+    });
+
+    // get recent 5 membership
+    app.get("/admin/recent-memberships", async (req, res) => {
+      try {
+        const recentMemberships = await membershipCollection
+          .find({})
+          .sort({ joinAt: -1 })
+          .limit(5)
+          .toArray();
+
+        // Format the data
+        const formattedData = recentMemberships.map((member) => ({
+          userName: member.memberName,
+          userEmail: member.memberEmail,
+          clubName: member.clubName,
+          dateJoined: new Date(member.joinAt).toISOString().split("T")[0],
+          status: member.status,
+        }));
+
+        res.send(formattedData);
+      } catch (error) {
+        console.error("Get Recent Memberships Error:", error);
+        res.status(500).send({ message: "Failed to get recent memberships" });
+      }
+    });
+
     // get clubs by gmail
     app.get("/clubs/:email", async (req, res) => {
       const email = req.params.email;
@@ -325,6 +438,49 @@ async function run() {
       }
     });
 
+    // GET - Get all registered users for manager's events
+    app.get("/event-registration-history/:email", async (req, res) => {
+      try {
+        const managerEmail = req.params.email;
+
+        // Step 1: Get all events created by this manager
+        const managerEvents = await eventsCollection
+          .find({ managerEmail: managerEmail })
+          .toArray();
+
+        // Get all event IDs
+        const eventIds = managerEvents.map((event) => event._id.toString());
+
+        // Step 2: Get all registrations for these events
+        const registrations = await eventRegistrationCollection
+          .find({
+            eventId: { $in: eventIds },
+            status: "registered",
+          })
+          .sort({ registeredAt: -1 })
+          .toArray();
+
+        // Step 3: Add event details to each registration
+        const registrationsWithDetails = registrations.map((reg) => {
+          const event = managerEvents.find(
+            (e) => e._id.toString() === reg.eventId
+          );
+          return {
+            ...reg,
+            eventName: event?.eventName,
+            eventDate: event?.eventDate,
+            eventTime: event?.eventTime,
+            clubName: event?.clubName,
+            location: event?.location,
+          };
+        });
+
+        res.send(registrationsWithDetails);
+      } catch (error) {
+        console.error("Get Registration History Error:", error);
+        res.status(500).send({ message: "Failed to get registration history" });
+      }
+    });
 
     //get register user by id for events details
     app.get("/event-registration/:email", async (req, res) => {
@@ -333,12 +489,14 @@ async function run() {
         const eventId = req.query.eventId;
 
         if (!email || !eventId) {
-          return res.status(400).send({ message: "Email and eventId required" });
+          return res
+            .status(400)
+            .send({ message: "Email and eventId required" });
         }
 
         const query = {
-           userEmail: email,
-           eventId: eventId,
+          userEmail: email,
+          eventId: eventId,
         };
 
         const result = await eventRegistrationCollection.findOne(query);
@@ -346,6 +504,36 @@ async function run() {
       } catch (error) {
         console.error("Get Membership Error:", error);
         res.status(500).send({ message: "Failed to get membership" });
+      }
+    });
+
+    // GET - Get all event registrations for a specific user
+    app.get("/event-registrations/user/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+
+        // Get all registrations
+        const registrations = await eventRegistrationCollection
+          .find({ userEmail: email, status: "registered" })
+          .sort({ registeredAt: -1 })
+          .toArray();
+
+        // For each registration, get the event details
+        const registrationsWithEvents = await Promise.all(
+          registrations.map(async (reg) => {
+            const event = await eventsCollection.findOne({
+              _id: new ObjectId(reg.eventId),
+            });
+
+            // Merge registration + event data
+            return { ...reg, ...event };
+          })
+        );
+
+        res.send(registrationsWithEvents);
+      } catch (error) {
+        console.error("Get User Registrations Error:", error);
+        res.status(500).send({ message: "Failed to get registrations" });
       }
     });
 
@@ -408,6 +596,26 @@ async function run() {
       } catch (error) {
         console.error("Get Membership Error:", error);
         res.status(500).send({ message: "Failed to get membership" });
+      }
+    });
+
+    // GET - Get user's club memberships
+    app.get("/memberships/user/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+
+        const memberships = await membershipCollection
+          .find({
+            memberEmail: email,
+            status: { $in: ["active", "paid"] },
+          })
+          .sort({ joinAt: -1 })
+          .toArray();
+
+        res.send(memberships);
+      } catch (error) {
+        console.error("Get User Memberships Error:", error);
+        res.status(500).send({ message: "Failed to get memberships" });
       }
     });
 
