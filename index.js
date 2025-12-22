@@ -235,6 +235,16 @@ async function run() {
       res.send(result);
     });
 
+    // get recent clubs
+    app.get("/recent-clubs", async (req, res) => {
+      const result = await clubsCollection
+        .find()
+        .sort({ createdAt: -1 })
+        .limit(6)
+        .toArray();
+      res.send(result);
+    });
+
     // get clubs with status
     app.get("/all-clubs/status", async (req, res) => {
       const { status } = req.query;
@@ -707,12 +717,14 @@ async function run() {
           memberEmail: session.customer_email,
           memberName: session.metadata.customer_name,
           memberPhoto: session.metadata.customer_photo,
+          membershipStatus: "active",
           type: session.metadata.type,
           clubId: session.metadata.clubId,
           clubName: session.metadata.clubName,
           clubManagerEmail: session.metadata.clubManagerEmail,
           transactionId: session.payment_intent,
           paymentStatus: session.payment_status,
+
           paidAt: new Date(),
         };
 
@@ -741,6 +753,7 @@ async function run() {
             memberEmail: session.customer_email,
             memberName: session.metadata.customer_name,
             memberPhoto: session.metadata.customer_photo,
+            membershipStatus: "active",
             status: "paid",
             joinAt: new Date(),
           });
@@ -792,6 +805,71 @@ async function run() {
 
       const result = await paymentsCollection.find(query).toArray();
       res.send(result);
+    });
+
+    // GET - Get all members from manager's clubs
+    app.get("/manager/club-members/:email", async (req, res) => {
+      try {
+        const managerEmail = req.params.email;
+
+        // Step 1: Get all clubs managed by this email
+        const managerClubs = await clubsCollection
+          .find({ managerEmail: managerEmail })
+          .toArray();
+
+        // Get all club IDs
+        const clubIds = managerClubs.map((club) => club._id.toString());
+
+        if (clubIds.length === 0) {
+          return res.send([]);
+        }
+
+        // Step 2: Get all memberships for these clubs
+        const members = await membershipCollection
+          .find({
+            clubId: { $in: clubIds },
+          })
+          .sort({ joinAt: -1 })
+          .toArray();
+
+        // Step 3: Add club details to each member
+        const membersWithDetails = members.map((member) => {
+          const club = managerClubs.find(
+            (c) => c._id.toString() === member.clubId
+          );
+          return {
+            ...member,
+            clubName: club?.clubName || "Unknown Club",
+          };
+        });
+
+        res.send(membersWithDetails);
+      } catch (error) {
+        console.error("Get Club Members Error:", error);
+        res.status(500).send({ message: "Failed to get club members" });
+      }
+    });
+
+    // PATCH - Update membership status by ID
+    app.patch("/memberships/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { membershipStatus } = req.body;
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            membershipStatus: membershipStatus,
+            updatedAt: new Date(),
+          },
+        };
+
+        const result = await membershipCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      } catch (error) {
+        console.error("Update Membership Status Error:", error);
+        res.status(500).send({ message: "Failed to update membership status" });
+      }
     });
 
     // Send a ping to confirm a successful connection
